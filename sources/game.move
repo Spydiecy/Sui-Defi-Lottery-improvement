@@ -9,19 +9,17 @@ module lottery::game {
     use sui::sui::SUI;
     use sui::clock::{Self, Clock};
     use std::option::{Self, Option};
-    use std::vec::Vec;
+    use std::vector;
 
-    const E_PAYMENT_TOO_LOW : u64 = 0;
-    const E_WRONG_LOTTERY : u64 = 1;
-    const E_LOTTERY_ENDED: u64 = 2;
-    const E_LOTTERY_NOT_ENDED: u64 = 4;
-    const E_LOTTERY_COMPLETED: u64 = 5;
+    const EPaymentTooLow : u64 = 0;
+    const EWrongLottery : u64 = 1;
+    const ELotteryEnded: u64 = 2;
+    const ELotteryNotEnded: u64 = 4;
+    const ELotteryCompleted: u64 = 5;
 
-    enum LotteryStatus {
-        Active,
-        Ended,
-        Completed,
-    }
+    const ACTIVE : u64 = 0;
+    const ENDED: u64 = 1;
+    const COMPLETED: u64 = 2;
 
     struct Lottery has key {
         id: UID,
@@ -33,15 +31,16 @@ module lottery::game {
         winningTicket: Option<u64>,
         ticketPrice: u64,
         reward: Balance<SUI>,
-        status: LotteryStatus,
+        status: u64,
     }
 
     struct PlayerRecord has key, store {
         id: UID,
         lotteryId: ID,
-        tickets: Vec<u64>,
+        tickets: vector<u64>,
     }
 
+    // Starts a new lottery
     public fun startLottery(round: u64, ticketPrice: u64, lotteryDuration: u64, clock: &Clock, ctx: &mut TxContext) {
         let endTime = (lotteryDuration * 60 * 1000) + clock::timestamp_ms(clock);
 
@@ -55,19 +54,20 @@ module lottery::game {
             winningTicket: option::none(),
             ticketPrice,
             reward: balance::zero(),
-            status: LotteryStatus::Active, 
+            status: ACTIVE, 
         };
 
         transfer::share_object(lottery);
     }
 
+    // Creates a player record for a lottery
     public fun createPlayerRecord(lottery: &mut Lottery, ctx: &mut TxContext) {
         let lotteryId = object::uid_to_inner(&lottery.id);
 
         let player = PlayerRecord {
             id: object::new(ctx),
             lotteryId,
-            tickets: Vec::new(),
+            tickets: vector::empty(),
         };
 
         lottery.noOfPlayers = lottery.noOfPlayers + 1;
@@ -75,13 +75,14 @@ module lottery::game {
         transfer::public_transfer(player, tx_context::sender(ctx));
     }
 
+    // Buys a ticket for a lottery
     public fun buyTicket(lottery: &mut Lottery, playerRecord: &mut PlayerRecord, noOfTickets: u64, amount: Coin<SUI>, clock: &Clock ): u64 {
-        assert!(object::id(lottery) == playerRecord.lotteryId, E_WRONG_LOTTERY);
-        assert!(lottery.endTime > clock::timestamp_ms(clock), E_LOTTERY_ENDED);
-        assert!(lottery.status == LotteryStatus::Active, E_LOTTERY_ENDED);
+        assert!(object::id(lottery) == playerRecord.lotteryId, EWrongLottery);
+        assert!(lottery.endTime > clock::timestamp_ms(clock), ELotteryEnded);
+        assert!(lottery.status == ACTIVE, ELotteryEnded);
 
         let amountRequired = lottery.ticketPrice * noOfTickets;
-        assert!(coin::value(&amount) >= amountRequired, E_PAYMENT_TOO_LOW);
+        assert!(coin::value(&amount) >= amountRequired, EPaymentTooLow);
 
         let coin_balance = coin::into_balance(amount);
         balance::join(&mut lottery.reward, coin_balance);
@@ -90,16 +91,17 @@ module lottery::game {
         let newTicketId = oldTicketsCount;
         let newTotal = oldTicketsCount + noOfTickets;
         while (newTicketId < newTotal) {
-            playerRecord.tickets.push(newTicketId);
+            vector::push_back(&mut playerRecord.tickets, newTicketId);
             newTicketId = newTicketId + 1;
         };
 
-        playerRecord.tickets.len()
+        vector::length(& playerRecord.tickets)
     }
 
-    public fun endLottery(lottery: &mut Lottery, clock: &Clock, drand_sig: Vec<u8>){
-        assert!(lottery.endTime < clock::timestamp_ms(clock), E_LOTTERY_NOT_ENDED);
-        assert!(lottery.status == LotteryStatus::Active, E_LOTTERY_ENDED);
+    // Ends a lottery
+    public fun endLottery(lottery: &mut Lottery, clock: &Clock, drand_sig: vector<u8>){
+        assert!(lottery.endTime < clock::timestamp_ms(clock), ELotteryNotEnded);
+        assert!(lottery.status == ACTIVE, ELotteryEnded);
 
         verify_drand_signature(drand_sig, lottery.round);
 
@@ -107,19 +109,20 @@ module lottery::game {
 
         lottery.winningTicket = option::some(safe_selection(lottery.noOfTickets, &digest));
 
-        lottery.status = LotteryStatus::Ended;
+        lottery.status = ENDED;
     }
 
+    // Checks if a player is the winner of a lottery
     public fun checkIfWinner(lottery: &mut Lottery, player: PlayerRecord, ctx: &mut TxContext): bool {
         let PlayerRecord {id, lotteryId, tickets } = player;
         
-        assert!(object::id(lottery) == lotteryId, E_WRONG_LOTTERY);
-        assert!(lottery.status!= LotteryStatus::Completed, E_LOTTERY_COMPLETED);
-        assert!(lottery.status == LotteryStatus::Ended, E_LOTTERY_NOT_ENDED);
+        assert!(object::id(lottery) == lotteryId, EWrongLottery);
+        assert!(lottery.status!= COMPLETED, ELotteryCompleted);
+        assert!(lottery.status == ENDED, ELotteryNotEnded);
 
         let winningTicket = option::extract(&mut lottery.winningTicket);
 
-        let isWinner = tickets.contains(&winningTicket);   
+        let isWinner = vector::contains(&tickets, &winningTicket);   
 
         if (isWinner){
             lottery.winner = option::some(tx_context::sender(ctx));
@@ -130,7 +133,7 @@ module lottery::game {
            
             transfer::public_transfer(reward, tx_context::sender(ctx));
 
-            lottery.status = LotteryStatus::Completed; 
+            lottery.status = COMPLETED; 
         };
         
         object::delete(id);
